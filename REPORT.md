@@ -149,3 +149,98 @@ Valgrind (build with `-DEXITFREE`):
 none of the results touches this bug. The closest are 18643, 18653 and 18641
 (lambda with `:defer`, closed 2025) and 21600 (GC with pending `:defer`,
 closed). There is no open or closed PR for #21700, and the issue has no linked PR.
+
+---
+
+## Fix 2: quickfix jump to another help file does not add a jumplist entry
+
+- Issue: https://github.com/vim/vim/issues/21691 (open, reported by
+  qwerlkjasdf, no linked PR)
+- Fix branch: `fix-qf-help-jumplist`
+  (https://github.com/b84330808/vim/tree/fix-qf-help-jumplist)
+- Commit SHA: `747409687b26f548a21766bdd3f4d7df6920de74`
+- Files: `src/quickfix.c`, `src/testdir/test_quickfix.vim`
+
+### PR title
+
+    quickfix jump to another help file does not add a jumplist entry
+
+### PR body draft (rewrite in your own words)
+
+    Problem:  Jumping to a quickfix or location list entry in another help
+              file does not add an entry to the jumplist, CTRL-O does not go
+              back to where the cursor was (qwerlkjasdf).
+    Solution: Set the previous context mark before editing the help file
+              (Wei-Lun Li).
+
+    For a normal file qf_jump_edit_buffer() uses buflist_getfile() with
+    GETF_SETMARK, which sets the previous context mark.  For a help file it
+    calls do_ecmd() directly, so the mark was never set.  When the buffer
+    does not change, qf_jump_to_buffer() already sets the mark, so this is
+    only done when going to another buffer.  ":help other.txt" from a help
+    window already records the position (via getfile() with setpm), so this
+    makes ":cnext"/":cfirst" and the ":l" variants behave the same.
+
+    fixes: #21691
+
+    ### AI assistance
+    - [x] AI involvement is disclosed in the commit message
+
+    ### Checklist
+    - [x] The commit message follows the Problem/Solution form above
+    - [x] `Signed-off-by:` trailer is present
+    - [x] Tests were added (quickfix and location list)
+    - [x] No documentation update is needed (`:help jump-motions` already
+          says "the commands that start editing a new file" are jumps)
+
+### Reproduction of the original report (before the fix)
+
+With `VIMRUNTIME=runtime src/vim --clean -es -S repro.vim`: `:helpgrep \<jumplist\>`,
+`:help usr_02.txt`, `:618`, `:cfirst`, `CTRL-O`
+
+    before cfirst: usr_02.txt:618
+    after cfirst: builtin.txt:2345
+    after CTRL-O: usr_02.txt:1        <- wrong, after the fix: usr_02.txt:618
+
+### Test commands
+
+    cd src && make
+    cd testdir && make test_quickfix.res      # or TEST_FILTER=Test_help_jumplist
+    # fail-before: revert src/quickfix.c, keep the test
+    git stash push src/quickfix.c
+    cd .. && make && cd testdir && rm -f messages test.log && make test_quickfix.res
+    git stash pop
+
+### Fail-before output (fix reverted, test kept)
+
+    Executed 175 tests                       in   3.438763 seconds
+    1 FAILED:
+
+    From test_quickfix.vim:
+    Found errors in Test_help_jumplist():
+    command line..script src/testdir/runtest.vim[639]..function RunTheTest[63]..Test_help_jumplist[1]..Xhelp_jumplist_tests line 17: Expected ['Xjumpb.txt', 5] but got ['Xjumpa.txt', 3]
+    command line..script src/testdir/runtest.vim[639]..function RunTheTest[63]..Test_help_jumplist[2]..Xhelp_jumplist_tests line 17: Expected ['Xjumpb.txt', 5] but got ['Xjumpa.txt', 3]
+
+(both the quickfix `[1]` and the location list `[2]` variants fail)
+
+### Pass-after output
+
+    From test_quickfix.vim:
+    Executed 175 tests                       in   3.545496 seconds
+    From test_help.vim:
+    Executed 16 tests                        in   0.108080 seconds
+    From test_help_tagjump.vim:
+    Executed 3 tests                         in   0.123233 seconds
+    From test_jumplist.vim:
+    Executed 4 tests                         in   0.010877 seconds
+    From test_tagjump.vim:
+    Executed 43 tests                        in   0.270609 seconds
+
+(no `test.log`, so there were no failures). No memory is allocated or freed by this change.
+
+### Competing PR search (all states, 2026-11-04)
+
+`repo:vim/vim is:pr` with `jumplist help`, `jumplist quickfix`, `21691`,
+`setpcmark`, `helpgrep jump`, and `"jumplist" in:title created:>2026-01-01`:
+nothing related. The closest is 3331 ("curswant is not set on quickfix jumps",
+closed 2018), which is a different problem. There is no open or closed PR for #21691.
