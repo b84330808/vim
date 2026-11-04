@@ -1037,6 +1037,15 @@ func Test_regexp_error()
   call assert_fails('exe "normal /\\%#=2\\%2147483646c\<CR>"', 'E486:')
   call assert_fails('exe "normal /\\%#=2\\%102261125v\<CR>"',  'E951:')
   call assert_fails('exe "normal /\\%#=2\\%71582787v\<CR>"',   'E486:')
+  " the old engine silently truncated a large number to 32 bits
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%2147483647c')", 'E951:')
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%2147483647l')", 'E951:')
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%71582788v')", 'E951:')
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%4294967298c')", 'E951:')
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%<4294967298l')", 'E951:')
+  call assert_fails("call matchstr('abcd', '\\%#=1\\%18446744073709551618v')", 'E951:')
+  call assert_equal('', matchstr('abcd', '\%#=1\%2147483646c'))
+  call assert_equal('', matchstr('abcd', '\%#=1\%71582787v'))
   call assert_equal('', matchstr('abcd', '\%o181\%o142'))
 endfunc
 

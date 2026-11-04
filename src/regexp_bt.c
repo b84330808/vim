@@ -1687,7 +1687,12 @@ regatom(int *flagp)
 			      while (VIM_ISDIGIT(c))
 			      {
 				  got_digit = TRUE;
-				  n = n * 10 + (c - '0');
+				  // Avoid wrapping around, a value of INT_MAX
+				  // or more gives an error below.
+				  if (n > INT_MAX / 10)
+				      n = INT_MAX;
+				  else
+				      n = n * 10 + (c - '0');
 				  c = getchr();
 			      }
 			      if (no_Magic(c) == '\'' && n == 0)
@@ -1707,6 +1712,8 @@ regatom(int *flagp)
 			      else if ((c == 'l' || c == 'c' || c == 'v')
 					  && (cur || got_digit))
 			      {
+				  long_u	limit = INT_MAX;
+
 				  if (cur && n)
 				  {
 				    semsg(_(e_regexp_number_after_dot_pos_search_chr),
@@ -1743,6 +1750,15 @@ regatom(int *flagp)
 					  n = vcol;
 				      }
 				      ret = regnode(RE_VCOL);
+				      limit = INT_MAX / MB_MAXBYTES;
+				  }
+				  // The number is stored in 32 bits, use the same
+				  // limits as the NFA engine.
+				  if (n >= limit)
+				  {
+				      emsg(_(e_percent_value_too_large));
+				      rc_did_emsg = TRUE;
+				      return NULL;
 				  }
 				  if (ret == JUST_CALC_SIZE)
 				      regsize += 5;
