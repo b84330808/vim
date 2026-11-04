@@ -356,18 +356,139 @@ related.
 
 ---
 
+## Fix 4: the old regexp engine truncates a large number in `\%l`, `\%c` and `\%v`
+
+- Issue: none upstream. Found by reading the code while working on fix 3
+  (same root cause: a number from the pattern stored in 32 bits). Searched
+  `repo:vim/vim is:issue` for `E951`, `regexp value too large`,
+  `regexp 4294967297` and `regexp truncated 32`: only #21668 and #21681 are
+  related, and neither covers `\%l`/`\%c`/`\%v`.
+- Fix branch: `fix-regexp-bt-percent-too-large`
+  (https://github.com/b84330808/vim/tree/fix-regexp-bt-percent-too-large)
+- Commit SHA: `44f2ca296296f3c7db4d59e94ae64751cd6e0c38`
+- Files: `src/regexp_bt.c`, `src/testdir/test_regexp_latin.vim` (Latin-1)
+- Independent of fix 3. Both change `regexp_bt.c` (fix 3 `regpiece()`, fix 4
+  `regatom()`) and `test_regexp_latin.vim` in different places, and a test
+  merge of the two branches has no conflicts.
+
+### PR title
+
+    regexp: old engine truncates a large number in \%l, \%c and \%v
+
+### PR body draft (rewrite in your own words)
+
+    Problem:  regexp: the backtracking engine silently truncates a large number
+              in "\%23l", "\%23c" and "\%23v" to 32 bits, thus
+              "\%#=1\%4294967298c" matches in column 2, while the NFA engine
+              gives E951.
+    Solution: Check the number in the backtracking engine with the same limits
+              as the NFA engine and give E951, avoid wrapping around when
+              parsing the digits (Wei-Lun Li).
+
+    The backtracking engine stores the number with re_put_long(), which only
+    keeps 32 bits, and the digits were added up without an overflow check
+    (a 20-digit number wrapped around at 2^64).  The NFA engine gives E951
+    for a value >= INT_MAX (>= INT_MAX / MB_MAXBYTES for "\%v").  The same
+    limits are now used for the backtracking engine.  When parsing, the
+    value saturates at INT_MAX once it is larger than INT_MAX / 10, which
+    is also safe when long_u is 32 bits.  With the default 'regexpengine'
+    the NFA engine already rejected these values, so only "\%#=1" or
+    'regexpengine' set to 1 was affected.
+
+    Examples with "set re=1" before / after:
+      match('abc', '\%4294967298c')   1 / E951
+      search('\%4294967298l')         line 2 / E951
+      match('abc', '\%2147483647c')   -1 / E951   (NFA: E951)
+
+    ### AI assistance
+    - [x] AI involvement is disclosed in the commit message
+
+    ### Checklist
+    - [x] The commit message follows the Problem/Solution form above
+    - [x] `Signed-off-by:` trailer is present
+    - [x] Tests were added
+    - [x] No documentation update is needed (E951 is documented under
+          `/\%l` without mentioning an engine)
+
+### Test commands
+
+    cd src && make
+    cd testdir && make test_regexp_latin.res
+    # fail-before: revert src/regexp_bt.c, keep the test
+    git stash push src/regexp_bt.c
+    cd .. && make && cd testdir && rm -f messages test.log && make test_regexp_latin.res
+    git stash pop
+
+### Fail-before output (fix reverted, test kept)
+
+    Executed 35 tests                        in   1.461643 seconds
+    1 FAILED:
+
+    From test_regexp_latin.vim:
+    Found errors in Test_regexp_error():
+    ...Test_regexp_error line 18: command did not fail: call matchstr('abcd', '\%#=1\%2147483647c')
+    ...Test_regexp_error line 19: command did not fail: call matchstr('abcd', '\%#=1\%2147483647l')
+    ...Test_regexp_error line 20: command did not fail: call matchstr('abcd', '\%#=1\%71582788v')
+    ...Test_regexp_error line 21: command did not fail: call matchstr('abcd', '\%#=1\%4294967298c')
+    ...Test_regexp_error line 22: command did not fail: call matchstr('abcd', '\%#=1\%<4294967298l')
+    ...Test_regexp_error line 23: command did not fail: call matchstr('abcd', '\%#=1\%18446744073709551618v')
+
+(`...` is `command line..script src/testdir/runtest.vim[639]..function RunTheTest[63]..`)
+
+### Pass-after output
+
+    From test_regexp_latin.vim:
+    Executed 35 tests                        in   1.978630 seconds
+    From test_regexp_utf8.vim:
+    Executed 29 tests                        in   0.643245 seconds
+    From test_search.vim:
+    Executed 85 tests                        in   9.629118 seconds
+    From test_substitute.vim:
+    Executed 62 tests                        in   0.177858 seconds
+    From test_regex_char_classes.vim:
+    Executed 3 tests                         in   0.012951 seconds
+    From test_syntax.vim:
+    Executed 32 tests                        in   0.552465 seconds
+    From test_matchadd_conceal.vim:
+    Executed 12 tests                        in   0.259043 seconds
+
+(no `test.log`, so there were no failures)
+
+Valgrind (`-DEXITFREE` build, the new error path):
+
+    TEST_FILTER=Test_regexp_error make test_regexp_latin.res VALGRIND="valgrind --tool=memcheck --leak-check=full --errors-for-leak-kinds=definite --num-callers=45 --log-file=valgrind.re"
+    ==844==    definitely lost: 0 bytes in 0 blocks
+    ==844== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+
+### Competing PR search (all states, 2026-11-04)
+
+`repo:vim/vim is:pr` with `E951`, `"value too large"`,
+`regexp column number large`, `regexp_bt re_put_long` and
+`backtracking engine number`: nothing related. The closest are 9972 (NFA E1204,
+closed 2022) and 16994 (`\U`/`\%U` limit, closed 2025). No PR for this.
+
+---
+
 ## Other findings in the same module (not fixed, possible follow-ups)
 
-These have the same root cause as fix 3: a number from the pattern stored in
-32 bits. They were left out to keep each PR focused on one issue, and none
-has an upstream issue yet (checked with `gh api search/issues`).
+1. Backtracking engine `\{n,m}`: `match('aaa', 'a\{4294967297}')` returns 0
+   with `re=1`, because the count is truncated to 32 bits by
+   `reginsert_limits()`. Same root cause as fixes 3 and 4. No upstream issue
+   yet. Deciding between an error and a clamp here needs more thought
+   (`MAX_LIMIT` is `32767 << 16`).
+2. Private finding, see local follow-up: regexp NFA compiler (`regexp_nfa.c`).
 
-1. Backtracking engine `\%Nl`, `\%Nc`, `\%Nv`: the number is truncated by
-   `re_put_long()` (`regexp_bt.c`, `regatom()` `case 'l'/'c'/'v'`), while the
-   NFA engine gives `E951: \% value too large`. With `set re=1`:
-   `match('abc', '\%4294967298c')` returns 1 (should not match),
-   `search('\%4294967298l')` finds line 2. With `re=2` (and the default re=0)
-   these give E951.
-2. Backtracking engine `\{n,m}`: `match('aaa', 'a\{4294967297}')` returns 0
-   with `re=1` (the count is truncated to 1 by `reginsert_limits()`).
-3. Private finding, see local follow-up: regexp NFA compiler (`regexp_nfa.c`).
+---
+
+## Summary of fix branches
+
+| # | Branch | SHA | Upstream issue |
+|---|--------|-----|----------------|
+| 1 | `fix-defer-imported-func` | `527c5c1fe1a813cfa46883b6f8e8f2ff89f85717` | #21700 |
+| 2 | `fix-qf-help-jumplist` | `747409687b26f548a21766bdd3f4d7df6920de74` | #21691 |
+| 3 | `fix-regexp-lookbehind-limit` | `e10218c784f6e84a688850a05b4e89b9863716ab` | #21681 |
+| 4 | `fix-regexp-bt-percent-too-large` | `44f2ca296296f3c7db4d59e94ae64751cd6e0c38` | none (found in code) |
+
+All four branch from upstream `master` at `451793f`, each has a single commit
+authored and signed off by `Wei-Lun Li <b84330808@gmail.com>`, and each
+builds with `make` on Linux with no warnings.
