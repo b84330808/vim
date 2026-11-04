@@ -244,3 +244,130 @@ With `VIMRUNTIME=runtime src/vim --clean -es -S repro.vim`: `:helpgrep \<jumplis
 `setpcmark`, `helpgrep jump`, and `"jumplist" in:title created:>2026-01-01`:
 nothing related. The closest is 3331 ("curswant is not set on quickfix jumps",
 closed 2018), which is a different problem. There is no open or closed PR for #21691.
+
+---
+
+## Fix 3: regexp lookbehind limit `\@N<=` larger than 32 bits is truncated
+
+- Issue: https://github.com/vim/vim/issues/21681 (open, reported by
+  ran-extern, no linked PR. The reporter says their PR #21682 for #21668 does
+  **not** fix it)
+- Fix branch: `fix-regexp-lookbehind-limit`
+  (https://github.com/b84330808/vim/tree/fix-regexp-lookbehind-limit)
+- Commit SHA: `e10218c784f6e84a688850a05b4e89b9863716ab`
+- Files: `src/regexp_bt.c`, `src/regexp_nfa.c`, `src/testdir/test_regexp_latin.vim`
+  (the test file is Latin-1 encoded, keep it that way when editing)
+
+### PR title
+
+    regexp: lookbehind limit \@N<= larger than 32 bits is truncated
+
+### PR body draft (rewrite in your own words)
+
+    Problem:  regexp: a limit of 2^32 or more for "\@N<=" and "\@N<!" is
+              truncated to 32 bits and acts like a small limit, thus
+              "\(ab\)\@4294967297<=c" does not match "abc" (ran-extern).
+    Solution: Limit the value to MAXCOL before storing it in the compiled
+              pattern (Wei-Lun Li).
+
+    The backtracking engine stores the limit in four bytes (re_put_long())
+    and the NFA engine in an int (EMIT()), so 4294967297 became 1.  A line
+    cannot be longer than MAXCOL bytes, so a larger limit behaves the same
+    as MAXCOL (and as "no limit").  The value from getdecchrs() is checked as
+    a vimlong_T before the cast to long, because long is only 32 bits on
+    64-bit MS-Windows.  Both "\@N<=" and "\@N<!" are affected and fixed.
+
+    This is independent of #21682 (getdecchrs() wrap-around at 2^64): with
+    #21682 values above INT_MAX are still returned (up to INT_MAX * 10 + 9),
+    so they still need to be limited here.  The two changes do not conflict;
+    a test merge of both passes test_regexp_latin and test_search.
+
+    fixes: #21681
+    related: #21668
+
+    ### AI assistance
+    - [x] AI involvement is disclosed in the commit message
+
+    ### Checklist
+    - [x] The commit message follows the Problem/Solution form above
+    - [x] `Signed-off-by:` trailer is present
+    - [x] Tests were added (single line, all three 'regexpengine' values, and
+          multi-line for both engines)
+    - [x] No documentation update is needed
+
+### Test commands
+
+    cd src && make
+    cd testdir && make test_regexp_latin.res
+    # fail-before: revert the C files, keep the test
+    git stash push src/regexp_bt.c src/regexp_nfa.c
+    cd .. && make && cd testdir && rm -f messages test.log && make test_regexp_latin.res
+    git stash pop
+    # the issue's own reproduction
+    src/vim --clean -es '+set nocp' "+put =match('abc', '\(ab\)\@4294967297<=c')" "+put =match('abc', '\(ab\)\@99999<=c')" '+2,$print' '+q!'
+    #   before: -1 / 2     after: 2 / 2   (same with +set re=1 and re=2)
+
+### Fail-before output (fix reverted, test kept)
+
+    Executed 35 tests                        in   0.616756 seconds
+    2 FAILED:
+
+    From test_regexp_latin.vim:
+    Found errors in Test_lookbehind_across_line():
+    ...Test_lookbehind_across_line line 17: Expected 2 but got 0
+    ...Test_lookbehind_across_line line 18: Expected 2 but got 0
+    ...Test_lookbehind_across_line line 19: Expected 0 but got 2
+    ...Test_lookbehind_across_line line 20: Expected 0 but got 2
+    Found errors in Test_regexp_single_line_pat():
+    ...line 481: Error 0: pat: \"\(ab\)\@4294967297<=c\", text: \"abc\", did not match, expected: \"c\"
+    ...line 481: Error 1: pat: \"\(ab\)\@4294967297<=c\", text: \"abc\", did not match, expected: \"c\"
+    ...line 481: Error 2: pat: \"\(ab\)\@4294967297<=c\", text: \"abc\", did not match, expected: \"c\"
+    ...line 485: Error 0: pat: \"\(ab\)\@4294967297<!c\", text: \"abc\", match: \"c\", expected no match
+    ...line 485: Error 1: pat: \"\(ab\)\@4294967297<!c\", text: \"abc\", match: \"c\", expected no match
+    ...line 485: Error 2: pat: \"\(ab\)\@4294967297<!c\", text: \"abc\", match: \"c\", expected no match
+
+(`...` is `command line..script src/testdir/runtest.vim[639]..function RunTheTest[63]..`)
+
+### Pass-after output
+
+    From test_regexp_latin.vim:
+    Executed 35 tests                        in   0.644519 seconds
+    From test_regexp_utf8.vim:
+    Executed 29 tests                        in   0.596188 seconds
+    From test_search.vim:
+    Executed 85 tests                        in   8.637470 seconds
+    From test_substitute.vim:
+    Executed 62 tests                        in   0.191833 seconds
+    From test_regex_char_classes.vim:
+    Executed 3 tests                         in   0.013356 seconds
+
+(no `test.log`, so there were no failures)
+
+### Competing PR search (all states, 2026-11-04)
+
+`repo:vim/vim is:pr` with `lookbehind limit`, `look-behind`, `21681`,
+`regexp truncated`, `getdecchrs`, `regexp 32 bits`: the only related PR is
+https://github.com/vim/vim/pull/21682 (open, ran-extern, "very large decimal
+numbers in \%d or [\d] wrap around in regexp", `fixes: #21668`). It only
+changes `getdecchrs()` in `src/regexp.c`, and its author says in #21681 that
+it does not fix this. There's no overlap with this branch. Consider mentioning
+#21682 in the PR and offering to coordinate with ran-extern. Nothing else
+related.
+
+---
+
+## Other findings in the same module (not fixed, possible follow-ups)
+
+These have the same root cause as fix 3: a number from the pattern stored in
+32 bits. They were left out to keep each PR focused on one issue, and none
+has an upstream issue yet (checked with `gh api search/issues`).
+
+1. Backtracking engine `\%Nl`, `\%Nc`, `\%Nv`: the number is truncated by
+   `re_put_long()` (`regexp_bt.c`, `regatom()` `case 'l'/'c'/'v'`), while the
+   NFA engine gives `E951: \% value too large`. With `set re=1`:
+   `match('abc', '\%4294967298c')` returns 1 (should not match),
+   `search('\%4294967298l')` finds line 2. With `re=2` (and the default re=0)
+   these give E951.
+2. Backtracking engine `\{n,m}`: `match('aaa', 'a\{4294967297}')` returns 0
+   with `re=1` (the count is truncated to 1 by `reginsert_limits()`).
+3. Private finding, see local follow-up: regexp NFA compiler (`regexp_nfa.c`).
