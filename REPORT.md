@@ -476,7 +476,6 @@ closed 2022) and 16994 (`\U`/`\%U` limit, closed 2025). No PR for this.
    `reginsert_limits()`. Same root cause as fixes 3 and 4. No upstream issue
    yet. Deciding between an error and a clamp here needs more thought
    (`MAX_LIMIT` is `32767 << 16`).
-2. Private finding, see local follow-up: regexp NFA compiler (`regexp_nfa.c`).
 
 ---
 
